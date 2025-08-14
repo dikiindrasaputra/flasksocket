@@ -578,37 +578,40 @@ def view_cart(current_user):
 @app.route('/api/keranjang/checkout', methods=['POST'])
 @token_required
 def checkout(current_user):
-    keranjang_items = Keranjang.query.filter_by(user_id=current_user.id).all()
     data = request.get_json()
-    alamat_pengiriman = data.get('shipping_address')
+    alamat_pengiriman = data.get('alamat_pengiriman')
+    keranjang_items_data = data.get('keranjang_items', [])
     status_awal = data.get('status', 'Menunggu Pembayaran')
-
-    if not keranjang_items:
+    if not keranjang_items_data:
         return jsonify({"message": "Keranjang Anda kosong"}), 400
-
     if not alamat_pengiriman:
         return jsonify({"message": "Alamat pengiriman tidak boleh kosong"}), 400
-
     items_by_warung = {}
-    for item in keranjang_items:
-        produk = Produk.query.get(item.produk_id)
-        if not produk:
-            return jsonify({"message": "Produk tidak ditemukan"}), 404
-        
-        if produk.stok < item.jumlah:
-            return jsonify({"message": f"Stok produk {produk.nama} tidak mencukupi"}), 400
+    for item_data in keranjang_items_data:
+        produk_id = item_data.get('produk_id')
+        jumlah = item_data.get('jumlah')
 
+        if not produk_id or not jumlah:
+            return jsonify({"message": "Data produk tidak valid"}), 400
+        
+        produk = Produk.query.get(produk_id)
+        if not produk:
+            return jsonify({"message": f"Produk dengan ID {produk_id} tidak ditemukan"}), 404
+            
+        if produk.stok < jumlah:
+            return jsonify({"message": f"Stok produk {produk.nama} tidak mencukupi"}), 400
+        
         warung_id = produk.warung_id
         if warung_id not in items_by_warung:
             items_by_warung[warung_id] = []
-        items_by_warung[warung_id].append(item)
+        items_by_warung[warung_id].append({'produk': produk, 'jumlah': jumlah})
 
     list_pesanan_baru = []
     for warung_id, items in items_by_warung.items():
         total_harga_pesanan = 0
         for item in items:
-            produk = Produk.query.get(item.produk_id)
-            total_harga_pesanan += produk.harga * item.jumlah
+            produk = item['produk']
+            total_harga_pesanan += produk.harga * item['jumlah']
 
         new_pesanan = Pesanan(
             user_id=current_user.id,
@@ -621,22 +624,17 @@ def checkout(current_user):
         db.session.flush()
 
         for item in items:
-            produk = Produk.query.get(item.produk_id)
+            produk = item['produk']
             detail_pesanan = DetailPesanan(
                 pesanan_id=new_pesanan.id,
                 produk_id=produk.id,
-                jumlah=item.jumlah,
+                jumlah=item['jumlah'],
                 harga_satuan=produk.harga
             )
             db.session.add(detail_pesanan)
-            produk.stok -= item.jumlah
-
+            produk.stok -= item['jumlah']
+        
         list_pesanan_baru.append(new_pesanan)
-
-    for item in keranjang_items:
-        db.session.delete(item)
-
-    db.session.commit()
 
     for pesanan in list_pesanan_baru:
         socketio.emit('new_order_alert', {
@@ -646,7 +644,7 @@ def checkout(current_user):
             'warung_id': pesanan.warung_id,
             'warung_nama': pesanan.warung.nama
         }, room=f'warung_{pesanan.warung_id}')
-    
+        
     return jsonify({"message": f"{len(list_pesanan_baru)} pesanan berhasil dibuat."}), 200
 
 @app.route('/api/transaksi', methods=['GET'])
@@ -793,3 +791,4 @@ def get_wallet_summary(current_user):
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
+
